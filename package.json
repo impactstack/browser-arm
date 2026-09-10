@@ -1,0 +1,11 @@
+{
+  "name": "browser-arm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "BROWSER_ARM_PORT=8799 node selfcheck.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}
