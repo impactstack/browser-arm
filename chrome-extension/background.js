@@ -1,15 +1,17 @@
 // Browser Arm — Chrome side.
 // Dials the pi extension's WS server (ws://localhost:PORT/chrome) and executes
-// commands against per-agent tabs via chrome.debugger (CDP).
+// commands against per-agent windows via chrome.debugger (CDP).
 // Multiple pi sessions relay through one host, so every command carries an
-// `agent` id: each agent gets its own tab and its own element-id namespace.
+// `agent` id: each agent session gets its own dedicated window (spawned on
+// first use) and its own element-id namespace. All of the agent's tabs live
+// inside that window; the current tab is just the window's active tab.
 const PORT = 8765;
 const WS_URL = `ws://localhost:${PORT}/chrome`; // /chrome = "I'm the browser"; bare / = another pi session relaying
 const LOAD_TIMEOUT = 15000;
 
 let ws;
-const agentTabs = new Map();    // agent id -> tabId
-const agentWindows = new Map(); // agent id -> windowId (per-agent window)
+const agentTabs = new Map();    // agent id -> explicitly selected tabId (tabs select; may live outside the agent's window)
+const agentWindows = new Map(); // agent id -> windowId (per-agent session window)
 const ownedWindows = new Set(); // window ids the arm created — the only ones safe to auto-close
 const IDLE_CLOSE_MS = 10 * 60 * 1000; // reap an agent's window after this much inactivity
 const attached = new Set();
@@ -64,8 +66,8 @@ function bumpIdle(agent) {
 }
 
 async function reapAgent(agent) {
-  const winId = agentWindows.get(agent);
   agentTabs.delete(agent);
+  const winId = agentWindows.get(agent);
   agentWindows.delete(agent);
   // only close windows the arm created — never a user window the agent adopted via tabs select
   if (winId != null && ownedWindows.has(winId)) {
@@ -76,28 +78,36 @@ async function reapAgent(agent) {
 
 // ---------- tab + debugger helpers ----------
 
+// This agent's dedicated window: the live one, or a freshly spawned one
+// (unfocused so concurrent agents don't steal each other's focus; cascaded so
+// windows don't stack pixel-identical).
+async function agentWindow(agent) {
+  const winId = agentWindows.get(agent);
+  if (winId != null) {
+    try { return await chrome.windows.get(winId, { populate: true }); } catch { agentWindows.delete(agent); }
+  }
+  const n = ownedWindows.size;
+  const win = await chrome.windows.create({ url: "about:blank", focused: false, left: 60 + n * 40, top: 40 + n * 40 });
+  ownedWindows.add(win.id);
+  agentWindows.set(agent, win.id);
+  return win;
+}
+
+// Current tab: explicitly adopted one (tabs select — may live in any window,
+// driven over CDP without touching focus), else the dedicated window's active tab.
 async function currentTab(agent) {
   const tabId = agentTabs.get(agent);
   if (tabId != null) {
     try { return await chrome.tabs.get(tabId); } catch { agentTabs.delete(agent); }
   }
-  const winId = agentWindows.get(agent);
-  if (winId != null) {
-    try {
-      const win = await chrome.windows.get(winId, { populate: true });
-      const tab = win.tabs?.find((t) => t.active);
-      if (tab && tab.id != null) { agentTabs.set(agent, tab.id); return tab; }
-      return null;
-    } catch { agentWindows.delete(agent); }
-  }
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (tab && /^https?:/.test(tab.url || "")) { agentTabs.set(agent, tab.id); return tab; }
-  return null;
+  const win = await agentWindow(agent);
+  const tab = win.tabs?.find((t) => t.active) ?? win.tabs?.[0];
+  return tab && tab.id != null ? tab : null;
 }
 
 async function requireTab(agent) {
   const tab = await currentTab(agent);
-  if (!tab) throw new Error("no usable tab — open a normal (http/https) page, or use browser_navigate");
+  if (!tab) throw new Error("no usable tab in this agent's window — use browser_navigate");
   return tab;
 }
 
@@ -194,12 +204,19 @@ function snapshotJs(agent) {
 // ---------- command handlers ----------
 
 const handlers = {
-  async navigate({ url }, agent) {
+  async navigate({ url, newTab }, agent) {
     const u = new URL(url); // validates
-    const tab = await currentTab(agent);
-    const loaded = new Promise((resolve) => {
+    let tab;
+    if (newTab) {
+      const win = await agentWindow(agent);
+      tab = await chrome.tabs.create({ windowId: win.id, url: u.href, active: true }); // many tabs per agent window
+    } else {
+      tab = await currentTab(agent);
+      await chrome.tabs.update(tab.id, { url: u.href });
+    }
+    await new Promise((resolve) => {
       const listener = (tabId, info) => {
-        if (tabId === agentTabs.get(agent) && info.status === "complete") {
+        if (tabId === tab.id && info.status === "complete") {
           chrome.tabs.onUpdated.removeListener(listener);
           resolve();
         }
@@ -207,15 +224,7 @@ const handlers = {
       chrome.tabs.onUpdated.addListener(listener);
       setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, LOAD_TIMEOUT);
     });
-    if (tab) await chrome.tabs.update(tab.id, { url: u.href });
-    else {
-      const win = await chrome.windows.create({ url: u.href, focused: false }); // per-agent window, opens in background
-      ownedWindows.add(win.id);
-      agentWindows.set(agent, win.id);
-      agentTabs.set(agent, win.tabs?.[0]?.id);
-    }
-    await loaded;
-    const t2 = await chrome.tabs.get(agentTabs.get(agent));
+    const t2 = await chrome.tabs.get(tab.id);
     return `Loaded: ${t2.title} — ${t2.url}`;
   },
 
@@ -277,7 +286,9 @@ const handlers = {
     return s == null ? "undefined" : String(s).slice(0, 50000);
   },
 
-  // ponytail: two agents explicitly sharing one tab (tabs select) can still interleave keystrokes; per-agent tabs is the default isolation
+  // Own window is home base, but select can adopt any tab in the browser.
+  // Adopted tabs are driven via CDP without activating/focusing their window,
+  // so agents never steal focus from the user or each other.
   async tabs({ action, tabId }, agent) {
     if (action === "list") {
       const owner = new Map([...agentTabs].map(([a, t]) => [t, a]));
@@ -288,17 +299,20 @@ const handlers = {
     }
     if (action === "select") {
       if (tabId == null) throw new Error("tabs select needs tabId (from browser_tabs list)");
-      const t = await chrome.tabs.get(tabId);
-      await chrome.windows.update(t.windowId, { focused: true });
-      await chrome.tabs.update(tabId, { active: true });
+      await chrome.tabs.get(tabId); // throws if the tab is gone
       agentTabs.set(agent, tabId);
-      return `Tab ${tabId} is now this agent's tab`;
+      return `Tab ${tabId} is now this agent's current tab`;
     }
     if (action === "close") {
-      const id = tabId ?? agentTabs.get(agent);
+      // never call currentTab here — it spawns the agent's window as a side effect
+      let id = tabId ?? agentTabs.get(agent);
+      const winId = agentWindows.get(agent);
+      if (id == null && winId != null) {
+        const win = await chrome.windows.get(winId, { populate: true }).catch(() => null);
+        id = (win?.tabs?.find((t) => t.active) || win?.tabs?.[0])?.id;
+      }
       if (id == null) throw new Error("no tab to close");
-      await chrome.tabs.remove(id);
-      for (const [a, t] of agentTabs) if (t === id) agentTabs.delete(a);
+      await chrome.tabs.remove(id); // last tab of a window → window closes → onRemoved cleans up
       return `Closed tab ${id}`;
     }
     throw new Error(`unknown tabs action "${action}" (list | select | close)`);

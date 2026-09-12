@@ -146,8 +146,11 @@ export default function browserArm(pi: ExtensionAPI) {
   tool({
     name: "browser_navigate",
     label: "Browser Navigate",
-    description: "Open a URL in the arm's browser tab (creates one if needed). Waits for page load.",
-    parameters: Type.Object({ url: Type.String({ description: "Full URL, e.g. https://example.com" }) }),
+    description: "Open a URL in this agent session's dedicated browser window (spawned on first use). newTab=true opens it in a fresh tab of that window instead of the current one. Waits for page load.",
+    parameters: Type.Object({
+      url: Type.String({ description: "Full URL, e.g. https://example.com" }),
+      newTab: Type.Optional(Type.Boolean({ description: "Open in a new tab of this agent's window" })),
+    }),
     run: (p) => arm<string>("navigate", p),
   });
 
@@ -231,10 +234,10 @@ export default function browserArm(pi: ExtensionAPI) {
   tool({
     name: "browser_tabs",
     label: "Browser Tabs",
-    description: "Manage browser tabs: list (ids + titles), select (make it the arm's tab), close.",
+    description: "Manage tabs: list (all tabs in the browser, with owning agent), select (adopt any tab as this agent's current tab, even outside its own window), close (default: this agent's current tab).",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("list"), Type.Literal("select"), Type.Literal("close")], { description: "Tab action" }),
-      tabId: Type.Optional(Type.Number({ description: "Target tab id (from list). Default: the arm's tab (close/select)" })),
+      tabId: Type.Optional(Type.Number({ description: "Target tab id (from list). Default: this agent's current tab (close/select)" })),
     }),
     run: (p) => arm<unknown>("tabs", p).then((r) => JSON.stringify(r, null, 1)),
   });
