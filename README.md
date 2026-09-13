@@ -1,6 +1,6 @@
 # Browser Arm
 
-Give the [pi](https://github.com/earendil-works/pi-coding-agent) coding agent an arm to drive Chrome.
+Give any AI coding agent an arm to drive Chrome.
 
 ```
 ┌──────────────┐  tool calls   ┌────────────────┐  ws://localhost:8765  ┌────────────────────┐
@@ -11,6 +11,7 @@ Give the [pi](https://github.com/earendil-works/pi-coding-agent) coding agent an
 
 - **pi side** (`pi-extension/`): registers 9 `browser_*` tools + `/arm` status command. Hosts a WebSocket server; extra pi sessions auto-relay through it.
 - **Chrome side** (`chrome-extension/`): MV3 service worker that dials the server and executes commands via `chrome.debugger` (CDP) — real input events, screenshots, JS evaluation.
+- **Agent-agnostic**: pi is just the shipped adapter. The arm speaks a tiny JSON-over-WebSocket protocol — any agent or script that can open a WebSocket (Claude Code, Cursor, your own code) can drive it. See [Using with any agent](#using-with-any-agent-protocol).
 
 ## Layout
 
@@ -25,13 +26,33 @@ make-icons.mjs      regenerates chrome-extension/icons (stdlib-only PNG writer)
 
 ## Setup
 
-**1. pi extension** (needs `npm install` once for `ws`):
+Prerequisite: [Node.js](https://nodejs.org) 18+.
+
+- **macOS**: `brew install node` (or the installer from nodejs.org)
+- **Windows**: `winget install OpenJS.NodeJS.LTS` (or the installer from nodejs.org)
+
+**1. Get the repo and install the one dependency (`ws`):**
+
+macOS / Linux (Terminal):
 
 ```bash
-cd pi-extension && npm install
+git clone https://github.com/impactstack/browser-arm.git
+cd browser-arm/pi-extension && npm install
 ```
 
-Then add to `~/.pi/agent/settings.json`:
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/impactstack/browser-arm.git
+cd browser-arm\pi-extension; npm install
+```
+
+**2. Register the extension with pi** — add its absolute path to `settings.json`:
+
+| OS | File |
+|----|------|
+| macOS / Linux | `~/.pi/agent/settings.json` |
+| Windows | `%USERPROFILE%\.pi\agent\settings.json` (i.e. `C:\Users\<you>\.pi\agent\settings.json`) |
 
 ```json
 {
@@ -39,11 +60,16 @@ Then add to `~/.pi/agent/settings.json`:
 }
 ```
 
-(Or copy/symlink into `~/.pi/agent/extensions/browser-arm`.)
+Example paths:
 
-**2. Chrome extension**: `chrome://extensions` → enable Developer mode → **Load unpacked** → select `chrome-extension/`.
+- macOS: `/Users/you/browser-arm/pi-extension`
+- Windows: `C:\\Users\\you\\browser-arm\\pi-extension` (backslashes must be escaped as `\\` in JSON)
 
-**3. Verify**: run `pi`, type `/arm`. Should say connected. Without Chrome, `node fake-arm.js` stands in for the browser (every command gets a canned response — proves the loop works).
+(Alternatively copy/symlink into `~/.pi/agent/extensions/browser-arm` — on Windows, symlinks require Developer Mode: Settings → Privacy & security → For developers → enable it.)
+
+**3. Chrome extension** (same on both OSes): open `chrome://extensions` → enable **Developer mode** (top right) → **Load unpacked** → select the `chrome-extension/` folder from the repo.
+
+**4. Verify**: run `pi`, type `/arm`. Should say connected. Without Chrome, `node fake-arm.js` stands in for the browser (every command gets a canned response — proves the loop works).
 
 ## Tools
 
@@ -60,6 +86,53 @@ Then add to `~/.pi/agent/settings.json`:
 | `browser_tabs` | list (all tabs, with owning agent) / select (adopt any tab) / close |
 
 Typical agent loop: `snapshot` → `click`/`type` by id → `screenshot` or `read` to verify.
+
+## Using with any agent (protocol)
+
+The pi extension is optional plumbing — the arm itself only needs a WebSocket client. Connect to `ws://localhost:8765` (any path except `/chrome`, which is reserved for the Chrome extension) and exchange JSON:
+
+```jsonc
+// request  — agent id gives the caller its own dedicated browser window
+{ "id": 1, "cmd": "navigate", "params": { "url": "https://example.com" }, "agent": "my-agent" }
+// response
+{ "id": 1, "ok": true, "result": "Loaded: Example Domain — https://example.com/" }
+// on failure: { "id": 1, "ok": false, "error": "..." }
+```
+
+Commands (`params`):
+
+| cmd | params | returns |
+|-----|--------|---------|
+| `navigate` | `{ url, newTab? }` | status line, waits for load |
+| `snapshot` | `{}` | numbered interactive elements |
+| `click` | `{ id }` | confirmation |
+| `type` | `{ id, text, submit?, mode? }` | confirmation |
+| `press` | `{ key }` | confirmation |
+| `read` | `{}` | page text (≤20k chars) |
+| `screenshot` | `{}` | `{ data }` base64 jpeg |
+| `evaluate` | `{ expression }` | JSON value |
+| `tabs` | `{ action: "list"\|"select"\|"close", tabId? }` | list / confirmation |
+
+Minimal client — works from any language with a WebSocket lib. Node 22+ example (zero deps):
+
+```js
+// arm-client.mjs
+const arm = new WebSocket("ws://localhost:8765");
+await new Promise((r) => (arm.onopen = r));
+let id = 0;
+const pending = new Map();
+arm.onmessage = (e) => { const m = JSON.parse(e.data); pending.get(m.id)?.(m); };
+const call = (cmd, params = {}, agent = "my-agent") =>
+  new Promise((resolve) => {
+    pending.set(++id, resolve);
+    arm.send(JSON.stringify({ id, cmd, params, agent }));
+  });
+
+console.log(await call("navigate", { url: "https://example.com" }));
+console.log(await call("snapshot"));
+```
+
+Same `agent` id ⇒ same dedicated window + element-id namespace; a different id spawns a separate window. Per-agent commands are serialized, so concurrent agents can't interleave half a click.
 
 ## Security
 
