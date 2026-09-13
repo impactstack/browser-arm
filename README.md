@@ -24,52 +24,102 @@ selfcheck.mjs       end-to-end self-check (host + relay), no Chrome needed
 make-icons.mjs      regenerates chrome-extension/icons (stdlib-only PNG writer)
 ```
 
-## Setup
+## Install
 
-Prerequisite: [Node.js](https://nodejs.org) 18+.
+> **For AI agents executing this README:** run each command verbatim from the repo root, check the ✅ Verify line before moving on, and stop at the first failure. Replace `<ABS>` with the repo's absolute path (macOS/Linux: `$(pwd)` after cloning; Windows: the cloned folder, e.g. `C:\src\browser-arm` — in JSON, backslashes must be escaped as `\\`).
 
-- **macOS**: `brew install node` (or the installer from nodejs.org)
-- **Windows**: `winget install OpenJS.NodeJS.LTS` (or the installer from nodejs.org)
+### Step 1 — Node.js 18+ and dependencies
 
-**1. Get the repo and install the one dependency (`ws`):**
-
-macOS / Linux (Terminal):
+macOS / Linux:
 
 ```bash
-git clone https://github.com/impactstack/browser-arm.git
-cd browser-arm/pi-extension && npm install
+node --version || brew install node
+cd <ABS>/pi-extension && npm install && cd ..
 ```
 
 Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/impactstack/browser-arm.git
-cd browser-arm\pi-extension; npm install
+node --version; if ($LASTEXITCODE -ne 0) { winget install OpenJS.NodeJS.LTS }
+cd <ABS>\pi-extension; npm install; cd ..
 ```
 
-**2. Register the extension with pi** — add its absolute path to `settings.json`:
+✅ Verify: `node --version` prints v18+ and this prints `ws ok`:
+
+```bash
+node -e "require('ws'); console.log('ws ok')"   # run from <ABS>/pi-extension
+```
+
+### Step 2 — Register the extension with pi
+
+Edit pi's settings file (create if missing; merge keys if it exists — don't overwrite other settings):
 
 | OS | File |
 |----|------|
 | macOS / Linux | `~/.pi/agent/settings.json` |
-| Windows | `%USERPROFILE%\.pi\agent\settings.json` (i.e. `C:\Users\<you>\.pi\agent\settings.json`) |
+| Windows | `%USERPROFILE%\.pi\agent\settings.json` |
 
 ```json
 {
-  "extensions": ["/absolute/path/to/browser-arm/pi-extension"]
+  "extensions": ["<ABS>/pi-extension"]
 }
 ```
 
-Example paths:
+macOS / Linux example: `"/Users/me/src/browser-arm/pi-extension"` · Windows example: `"C:\\src\\browser-arm\\pi-extension"`
 
-- macOS: `/Users/you/browser-arm/pi-extension`
-- Windows: `C:\\Users\\you\\browser-arm\\pi-extension` (backslashes must be escaped as `\\` in JSON)
+✅ Verify (macOS / Linux):
 
-(Alternatively copy/symlink into `~/.pi/agent/extensions/browser-arm` — on Windows, symlinks require Developer Mode: Settings → Privacy & security → For developers → enable it.)
+```bash
+node -e "const s=JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.pi/agent/settings.json')); console.log(s.extensions.find(e=>e.endsWith('pi-extension')) ? 'registered' : 'MISSING')"
+```
 
-**3. Chrome extension** (same on both OSes): open `chrome://extensions` → enable **Developer mode** (top right) → **Load unpacked** → select the `chrome-extension/` folder from the repo.
+Windows (PowerShell):
 
-**4. Verify**: run `pi`, type `/arm`. Should say connected. Without Chrome, `node fake-arm.js` stands in for the browser (every command gets a canned response — proves the loop works).
+```powershell
+node -e "const s=JSON.parse(require('fs').readFileSync(process.env.USERPROFILE+'/.pi/agent/settings.json')); console.log(s.extensions.find(e=>e.endsWith('pi-extension')) ? 'registered' : 'MISSING')"
+```
+
+Then **restart pi** — extensions load at startup. Check with `/arm` in pi: it should say `hosting ws://localhost:8765, waiting for Chrome` (or `Chrome connected`).
+
+### Step 3 — Load the Chrome extension (manual UI step, both OSes)
+
+An agent can guide the user through this; it cannot click it itself:
+
+1. Open `chrome://extensions`
+2. Toggle **Developer mode** (top right)
+3. Click **Load unpacked** → select the folder `<ABS>/chrome-extension`
+4. The "Browser Arm started debugging this browser" infobar is expected
+
+✅ Verify: within ~2s, the pi session's `/arm` says `Chrome connected` (the extension dials every 2s).
+
+### Step 4 — End-to-end check (works without pi, too)
+
+With Chrome loaded, drive the arm directly over the protocol:
+
+```bash
+node --input-type=module -e "
+const arm = new WebSocket('ws://localhost:8765');
+await new Promise((r) => (arm.onopen = r));
+arm.onmessage = (e) => { const m = JSON.parse(e.data); console.log(m.ok ? 'OK: ' + m.result : 'FAIL: ' + m.error); process.exit(m.ok ? 0 : 1); };
+arm.send(JSON.stringify({ id: 1, cmd: 'navigate', params: { url: 'https://example.com' }, agent: 'install-check' }));
+"
+```
+
+✅ Verify: prints `OK: Loaded: Example Domain — https://example.com/`. (This opens a dedicated window for the `install-check` agent; it auto-closes after 10 min idle.)
+
+Exit codes: 0 = installed and working. Any FAIL means the Chrome extension isn't loaded (Step 3) or the port is busy — override with `BROWSER_ARM_PORT` on the pi side and `PORT` in `chrome-extension/background.js`.
+
+No-Chrome fallback: `node fake-arm.js` stands in for the browser (canned responses — proves the pi-side loop only).
+
+### Alternative: symlink instead of settings.json
+
+macOS / Linux:
+
+```bash
+mkdir -p ~/.pi/agent/extensions && ln -s <ABS>/pi-extension ~/.pi/agent/extensions/browser-arm
+```
+
+Windows: symlinks need Developer Mode (Settings → Privacy & security → For developers); prefer the settings.json route.
 
 ## Tools
 
