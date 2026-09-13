@@ -108,6 +108,15 @@ async function currentTab(agent) {
 async function requireTab(agent) {
   const tab = await currentTab(agent);
   if (!tab) throw new Error("no usable tab in this agent's window — use browser_navigate");
+  // chrome:// and other extensions' chrome-extension:// pages reject chrome.debugger
+  // ("Cannot access a chrome-extension:// URL of different extension") — fail early
+  // with a way out instead of CDP's cryptic error.
+  if (!/^(https?:|about:blank)/.test(tab.url || "")) {
+    throw new Error(
+      `can't drive "${String(tab.url).slice(0, 50)}" — browser-internal pages reject the debugger. ` +
+      `browser_navigate this tab to a real URL, or browser_tabs select an http(s) tab`,
+    );
+  }
   return tab;
 }
 
