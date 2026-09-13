@@ -226,8 +226,8 @@ export default function browserArm(pi: ExtensionAPI) {
   tool({
     name: "browser_evaluate",
     label: "Browser Evaluate",
-    description: "Run arbitrary JS in the page (async/await ok), returns the JSON value. Escape hatch for anything the other tools can't do.",
-    parameters: Type.Object({ expression: Type.String({ description: "JS expression, e.g. document.title or (await fetch('/api')).status" }) }),
+    description: "Run arbitrary JS in the page, returns the JSON value. Escape hatch for anything the other tools can't do. Top-level await is a SyntaxError — wrap awaited code in (async () => { ... })().",
+    parameters: Type.Object({ expression: Type.String({ description: "JS expression, e.g. document.title or (async () => (await fetch('/api')).status)()" }) }),
     run: (p) => arm<string>("evaluate", p),
   });
 

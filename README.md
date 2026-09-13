@@ -194,7 +194,7 @@ The WebSocket server binds to **localhost with no auth**. Anything running on yo
 
 ## Skills
 
-`skills/google-sheets` teaches the agent to drive Google Sheets through the arm (the grid is canvas — it must go via the Name Box and cell editor). Install like any pi skill: symlink into `~/.pi/agent/skills/`.
+`skills/google-sheets` teaches the agent to drive Google Sheets through the arm (the grid is canvas — it must go via the Name Box and cell editor). `skills/ui-testing` teaches it to test web app UIs: click through flows, assert on DOM state, wait for async updates, capture console errors, screenshot evidence. Install like any pi skill: symlink into `~/.pi/agent/skills/`.
 
 ## Testing
 
