@@ -10,6 +10,21 @@ description: >
 
 # Testing web UIs with the browser arm
 
+## Invocation arguments (user notes)
+
+Anything the user passes after `/skill:ui-testing` arrives as a `User:` note —
+treat it as requirements context. Typical contents and how to use them:
+
+- **Target**: URL or dev-server port, how to reach a logged-in state (ask the
+  user to log in; never guess credentials).
+- **Scope**: which flows/scenarios to prioritize, or explicitly skip.
+- **Context**: known bugs to watch for, environment (staging vs prod), test
+  data to use, features behind flags.
+
+Weave every note into the scenario list below — user notes override this
+skill's defaults on conflict. If nothing is passed, ask for the URL and focus
+areas before starting.
+
 ## Test design (do this before clicking anything)
 
 Act like a test engineer: read the feature, then derive a scenario list

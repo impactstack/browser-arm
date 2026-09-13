@@ -10,6 +10,21 @@ description: >
 
 # Auditing loading performance with the browser arm
 
+## Invocation arguments (user notes)
+
+Anything the user passes after `/skill:perf-audit` arrives as a `User:` note —
+requirements context. Typical contents:
+
+- **Target**: URL (required if not already known); dev server vs prod.
+- **Focus**: metrics they care about (LCP? CLS? TTFB?), mobile vs desktop,
+  quick in-page vitals vs a scored Lighthouse run.
+- **Constraints**: what may not change (third-party tags, backend, framework),
+  previous audit results to compare against, budget targets.
+
+User notes override this skill's defaults — e.g. "only Lighthouse, mobile" or
+"in-page only, don't touch prod with throttled runs". If no target URL is
+known, ask before measuring.
+
 ## Two measurement modes
 
 1. **In-page** (`browser_evaluate` snippets below) — real numbers from the
