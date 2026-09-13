@@ -10,6 +10,32 @@ description: >
 
 # Testing web UIs with the browser arm
 
+## Test design (do this before clicking anything)
+
+Act like a test engineer: read the feature, then derive a scenario list
+before touching the browser. Standard coverage:
+
+1. **Happy path** — the intended flow end to end with valid data.
+2. **Bad paths** — required fields empty, invalid formats (`not-an-email`),
+   wrong types, expired/absent auth, backend error states.
+3. **Edge cases** — empty string vs whitespace-only, max-length and
+   over-max-length values, special chars (`<script>`, emoji, RTL text),
+   double-submit (click the button twice fast — is anything duplicated?),
+   refresh mid-flow, browser back (`browser_evaluate`: `history.back()`),
+   deep-linking straight to a later step's URL, and rerunning the flow twice
+   (idempotency).
+
+Fake a backend failure without touching the backend — intercept before acting:
+
+```js
+(() => { const f = window.fetch; window.fetch = (...a) => Promise.reject(new Error("simulated outage")); return "fetch will now fail"; })()
+```
+
+(Re-navigate to undo it.) Execute each scenario through the core loop below,
+then report a table: `scenario | expected | actual | pass/fail` + screenshots
+for failures. Order matters — run happy path first, edge cases after, and
+re-navigate between scenarios to reset app state.
+
 ## Core loop
 
 1. `browser_navigate` to the app (`http://localhost:3000` etc. — local dev
