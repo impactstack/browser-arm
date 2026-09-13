@@ -49,7 +49,7 @@ Then add to `~/.pi/agent/settings.json`:
 
 | Tool | What it does |
 |------|--------------|
-| `browser_navigate` | Open a URL in the arm's tab (creates one if needed), waits for load |
+| `browser_navigate` | Open a URL in the agent's own window (`newTab: true` → fresh tab in that window), waits for load |
 | `browser_snapshot` | Numbered outline of interactive elements (`12: <button> Sign in`) |
 | `browser_click` | Real mouse click on `#id` from the last snapshot |
 | `browser_type` | Click + type text into `#id`, optional Enter (`submit`); `mode: "chars"` for keydown-listener inputs |
@@ -57,9 +57,17 @@ Then add to `~/.pi/agent/settings.json`:
 | `browser_read` | Page's visible text (≤20k chars) |
 | `browser_screenshot` | Viewport jpeg returned as an image for the model |
 | `browser_evaluate` | Arbitrary JS in the page (escape hatch) |
-| `browser_tabs` | list / select / close tabs |
+| `browser_tabs` | list (all tabs, with owning agent) / select (adopt any tab) / close |
 
 Typical agent loop: `snapshot` → `click`/`type` by id → `screenshot` or `read` to verify.
+
+## Security
+
+The WebSocket server binds to **localhost with no auth**. Anything running on your machine can connect to `ws://localhost:8765` and drive your browser — with your logged-in sessions (read pages, screenshots, run JS). A hostile public website cannot reach it (Chrome blocks public → localhost), but any local process can. Practical posture:
+
+- Load the extension only while you're using the arm; unload it otherwise.
+- Don't run untrusted local code with the arm connected.
+- The agent sees and can act on whatever your browser is logged into — same trust level as you at the keyboard.
 
 ## Skills
 
