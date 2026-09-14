@@ -21,6 +21,7 @@ let seq = 0;
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 const pending = new Map<number, Pending>(); // our own outstanding commands
+let armUsed = false; // set when this session sends any arm command — gates the close-on-settle guard
 
 // host-side state for relayed commands from other pi sessions
 type RelayEntry = { relay: WebSocket; id: number; timer: NodeJS.Timeout };
@@ -95,6 +96,7 @@ function connectRelay() {
 
 async function arm<T = unknown>(cmd: string, params: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) throw new Error("aborted");
+  armUsed = true;
   const out =
     chromeSock?.readyState === WebSocket.OPEN ? chromeSock :
     relaySock?.readyState === WebSocket.OPEN ? relaySock : null;
@@ -252,6 +254,14 @@ export default function browserArm(pi: ExtensionAPI) {
       else msg = `Browser Arm [${AGENT_ID}] not connected — load chrome-extension/ in Chrome (dials ws://localhost:${PORT}/chrome)`;
       ctx.ui.notify(msg, "info");
     },
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    // run done and nothing else started → close this session's arm window
+    // (respawns automatically on the next browser command; page state is not kept between runs)
+    if (!armUsed || !ctx.isIdle()) return;
+    armUsed = false;
+    try { await arm("session-close"); } catch { /* arm down */ }
   });
 
   pi.on("session_shutdown", async () => {
