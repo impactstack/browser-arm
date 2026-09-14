@@ -106,12 +106,18 @@ async function currentTab(agent) {
 }
 
 async function requireTab(agent) {
-  const tab = await currentTab(agent);
+  let tab = await currentTab(agent);
   if (!tab) throw new Error("no usable tab in this agent's window — use browser_navigate");
-  // chrome:// and other extensions' chrome-extension:// pages reject chrome.debugger
-  // ("Cannot access a chrome-extension:// URL of different extension") — fail early
-  // with a way out instead of CDP's cryptic error.
-  if (!/^(https?:|about:blank)/.test(tab.url || "")) {
+  // Guard: browser-internal pages reject chrome.debugger. A fresh-tab page
+  // (user hit ctrl+T in the agent's window) holds nothing of value — recover
+  // by swapping it to about:blank and proceeding. Any other internal page
+  // (settings, extensions, other extensions' pages) holds real state: fail
+  // with a way out instead of CDP's cryptic attach error.
+  if (/^chrome:\/\/(newtab|new-tab-page)/.test(tab.url || "")) {
+    await chrome.tabs.update(tab.id, { url: "about:blank" });
+    await new Promise((r) => setTimeout(r, 300)); // let the swap settle
+    tab = await chrome.tabs.get(tab.id);
+  } else if (!/^(https?:|about:blank)/.test(tab.url || "")) {
     throw new Error(
       `can't drive "${String(tab.url).slice(0, 50)}" — browser-internal pages reject the debugger. ` +
       `browser_navigate this tab to a real URL, or browser_tabs select an http(s) tab`,
