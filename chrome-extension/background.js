@@ -213,6 +213,13 @@ function snapshotJs(agent) {
 // ---------- command handlers ----------
 
 const handlers = {
+  // pi sessions call this on shutdown so their window closes instantly instead
+  // of idling until the 10-minute reaper
+  async "session-close"(_params, agent) {
+    await reapAgent(agent);
+    return `window closed`;
+  },
+
   async navigate({ url, newTab }, agent) {
     const u = new URL(url); // validates
     let tab;

@@ -255,6 +255,8 @@ export default function browserArm(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    // wipe this session's arm window immediately (fire-and-forget; ignore if already gone)
+    try { await arm("session-close"); } catch { /* arm already down */ }
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(new Error("session ended")); }
     pending.clear();
     for (const [, e] of relayPending) clearTimeout(e.timer);
