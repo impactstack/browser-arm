@@ -10,6 +10,22 @@ description: >
 
 # Testing web UIs with the browser arm
 
+## Caution: the window closes when your run settles
+
+The arm window exists only while you are actively working. The moment your
+run settles, it closes — and page state (logins, forms, scroll, SPA route) is
+NOT kept. So prepare before the first browser command:
+
+- **Pre-flight**: dev server actually up? (`curl -s -o /dev/null -w "%{http_code}" http://localhost:PORT`)
+  — target URL, test data, credentials, and the scenario list all decided first.
+- **Batch**: all browser steps of a scenario go into ONE run. Don't answer the
+  user, run long shell jobs, or wait for confirmation between browser steps —
+  that settles the run and wipes the page.
+- **Login + flow together**: a login must happen in the same run as the flow
+  that needs it.
+- **After a settle, expect a fresh page**: re-navigate and log back in before
+  the next scenario — never assume the page you left is still there.
+
 ## Invocation arguments (user notes)
 
 Anything the user passes after `/skill:ui-testing` arrives as a `User:` note —

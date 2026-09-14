@@ -25,6 +25,20 @@ User notes override this skill's defaults — e.g. "only Lighthouse, mobile" or
 "in-page only, don't touch prod with throttled runs". If no target URL is
 known, ask before measuring.
 
+## Caution: prepare the run before measuring
+
+The arm window closes when your run settles — load metrics need a fresh load
+anyway, but sloppy sequencing wastes runs. Before the first browser command:
+
+- **Pre-flight**: target reachable? (`curl -s -o /dev/null -w "%{http_code}" <url>`)
+  — decide in-page vs Lighthouse, and which metrics matter, BEFORE starting.
+- **Batch**: navigate + all vitals snippets for one page = one run. Shell work
+  between snippets (starting servers, reading bundles) settles the run.
+- **Lighthouse runs from the shell** are unaffected by window closes — do them
+  anytime; only the in-page snippets need the window alive.
+- Fix-then-remeasure is naturally multi-run: each re-measure starts from a
+  fresh load, which is exactly what load metrics want.
+
 ## Two measurement modes
 
 1. **In-page** (`browser_evaluate` snippets below) — real numbers from the
