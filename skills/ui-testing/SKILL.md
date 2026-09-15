@@ -142,6 +142,7 @@ Then `window.__errs` — expect `[]`. Empty it between steps with `window.__errs
 - `browser_evaluate` sees what the page sees, nothing more (no network panel,
 storage of other tabs). Top-level `await` fails — always wrap in
 `(async () => { ... })()`.
-- Testing as a different user / role? Incognito isn't available — use the
-  app's own logout/login flow, or a second agent session only if you want a
-  parallel browser context (same Chrome profile, so same cookies).
+- Testing a second user/role? Don't reuse the same login — load the arm in
+  another Chrome profile and `browser_profile select` it (separate cookies),
+  or use the app's own logout/login flow within the same run. Incognito isn't
+  available.

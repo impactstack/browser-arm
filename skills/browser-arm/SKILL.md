@@ -43,6 +43,18 @@ kept. Therefore:
    setInterval(() => document.querySelector(".done") && (clearInterval(t), r(true)), 100);
    setTimeout(() => { clearInterval(t); r(false); }, 5000); }))()`.
 
+## Chrome profiles
+
+Each Chrome profile ("person") with the arm loaded connects separately — its
+own cookies, logins, and agent windows.
+
+- One profile connected: everything auto-routes there; ignore profiles.
+- Two or more: `browser_profile list`, then `browser_profile select <id>`
+  BEFORE browser work. Symptoms of driving the wrong one: "why am I not logged
+  in?", bookmarks/extensions missing on pages.
+- Need two users side by side? Two pi sessions, each selecting a different
+  profile — real isolation, cookies don't cross.
+
 ## Recovery
 
 - Landed on `chrome://newtab` (or the user hit ctrl+T in the window)? It
