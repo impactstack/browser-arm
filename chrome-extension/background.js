@@ -43,12 +43,20 @@ function connect() {
 }
 
 // stable per-profile id: Chrome has no API for the profile's name, so a random
-// id persisted in this profile's extension storage identifies it to the host
-chrome.storage.local.get(["profileId"]).then(({ profileId: id }) => {
+// id persisted in this profile's extension storage identifies it to the host.
+// If storage is unavailable (permission stripped/rejected), degrade to a
+// per-boot id: routing still works, the id just isn't stable across restarts.
+function boot(id) {
   profileId = id || "p-" + Math.random().toString(36).slice(2, 8);
-  if (!id) chrome.storage.local.set({ profileId });
+  if (!id) { try { chrome.storage.local.set({ profileId }); } catch {} }
   connect();
-});
+}
+try {
+  chrome.storage.local.get(["profileId"]).then(({ profileId: id }) => boot(id)).catch(() => boot());
+} catch {
+  console.warn("[arm] chrome.storage unavailable — using per-boot profile id");
+  boot();
+}
 
 // serialize each agent's multi-step sequences (click/type) so concurrent
 // agents can't interleave half a click or half a typed string
