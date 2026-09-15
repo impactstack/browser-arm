@@ -211,9 +211,9 @@ async function evalInTab(tabId, expression) {
   return r.result?.value;
 }
 
-function armSel(agent, id) {
+function armSel(_agent, id) {
   if (!/^\d+$/.test(String(id))) throw new Error(`bad element id "${id}" — use ids from browser_snapshot`);
-  return `[data-arm-id="${agent}:${id}"]`; // ids are namespaced per agent, safe to share a tab
+  return `[data-arm-id="${id}"]`; // ids are stable page-global (shared across agents on the same tab)
 }
 
 async function centerOf(tabId, agent, id) {
@@ -264,17 +264,20 @@ async function dispatchKey(tabId, k) {
 
 function snapshotJs(agent) {
   return `(() => {
-    const prefix = ${JSON.stringify(agent + ":")};
     const sel = 'a,button,input,textarea,select,summary,[role=button],[role=link],[role=tab],[role=checkbox],[role=radio],[role=combobox],[role=textbox],[onclick],[contenteditable]';
     const all = [...document.querySelectorAll(sel)];
     const els = all.filter(e => e.getClientRects().length > 0 && !all.some(p => p !== e && p.contains(e))); // ponytail: O(n²) dedupe, fine at page scale
-    els.slice(0, 200).forEach((e, i) => e.setAttribute("data-arm-id", prefix + (i + 1)));
-    const lines = els.slice(0, 200).map((e, i) => {
+    // stable page-global ids: other agent sessions also snapshot this tab and
+    // would otherwise renumber each other's references to "gone"
+    let next = Math.max(0, ...[...document.querySelectorAll("[data-arm-id]")].map(e => +e.getAttribute("data-arm-id") || 0)) + 1;
+    els.slice(0, 200).forEach((e) => { if (!e.getAttribute("data-arm-id")) e.setAttribute("data-arm-id", String(next++)); });
+    const lines = els.slice(0, 200).map((e) => {
+      const id = e.getAttribute("data-arm-id");
       const tag = e.tagName.toLowerCase();
       const type = e.getAttribute("type");
       const text = (e.innerText || e.value || e.selectedOptions?.[0]?.text || e.placeholder || e.getAttribute("aria-label") || e.getAttribute("title") || "")
         .trim().replace(/\\s+/g, " ").slice(0, 90);
-      return (i + 1) + ": <" + tag + (type ? " type=" + type : "") + (e.checked === true ? " checked" : "") + "> " + text;
+      return id + ": <" + tag + (type ? " type=" + type : "") + (e.checked === true ? " checked" : "") + "> " + text;
     });
     return lines.join("\\n") || "(no interactive elements)";
   })()`;
