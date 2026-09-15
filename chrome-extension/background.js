@@ -19,6 +19,28 @@ const ownedWindows = new Set(); // window ids the arm created — the only ones 
 const IDLE_CLOSE_MS = 10 * 60 * 1000; // reap an agent's window after this much inactivity
 const attached = new Set();
 
+// MV3 kills the service worker whenever it likes, wiping these Maps. Persist
+// them in session storage (survives SW restarts, cleared on browser exit) and
+// restore on boot — otherwise every SW restart orphans the agent's window and
+// spawns a fresh about:blank one mid-session.
+function persist() {
+  try {
+    chrome.storage.session.set({
+      agentTabs: [...agentTabs.entries()],
+      agentWindows: [...agentWindows.entries()],
+      ownedWindows: [...ownedWindows],
+    });
+  } catch {}
+}
+async function restore() {
+  try {
+    const st = await chrome.storage.session.get(["agentTabs", "agentWindows", "ownedWindows"]);
+    for (const [a, t] of st.agentTabs || []) agentTabs.set(a, t);
+    for (const [a, w] of st.agentWindows || []) agentWindows.set(a, w);
+    for (const w of st.ownedWindows || []) ownedWindows.add(w);
+  } catch {}
+}
+
 // MV3 keeps a service worker alive only while it's "active" — WS traffic
 // resets the idle timer, so ping while connected; if the SW still dies
 // (Chrome force-kill), the alarm wakes it and top-level connect() re-dials.
@@ -52,7 +74,7 @@ function boot(id) {
   connect();
 }
 try {
-  chrome.storage.local.get(["profileId"]).then(({ profileId: id }) => boot(id)).catch(() => boot());
+  chrome.storage.local.get(["profileId"]).then(async ({ profileId: id }) => { await restore(); boot(id); }).catch(async () => { await restore(); boot(); });
 } catch {
   console.warn("[arm] chrome.storage unavailable — using per-boot profile id");
   boot();
@@ -92,6 +114,7 @@ async function reapAgent(agent) {
   agentTabs.delete(agent);
   const winId = agentWindows.get(agent);
   agentWindows.delete(agent);
+  persist();
   // only close windows the arm created — never a user window the agent adopted via tabs select
   if (winId != null && ownedWindows.has(winId)) {
     ownedWindows.delete(winId);
@@ -113,6 +136,7 @@ async function agentWindow(agent) {
   const win = await chrome.windows.create({ url: "about:blank", focused: false, left: 60 + n * 40, top: 40 + n * 40 });
   ownedWindows.add(win.id);
   agentWindows.set(agent, win.id);
+  persist();
   return win;
 }
 
@@ -131,6 +155,13 @@ async function currentTab(agent) {
 async function requireTab(agent) {
   let tab = await currentTab(agent);
   if (!tab) throw new Error("no usable tab in this agent's window — use browser_navigate");
+  // Memory Saver discards idle tabs — a discarded tab reports url "" or an
+  // extension placeholder and rejects the debugger. Revive it first.
+  if (tab.discarded || !tab.url) {
+    try { await chrome.tabs.reload(tab.id); } catch { await chrome.tabs.update(tab.id, { url: "about:blank" }); }
+    await new Promise((r) => setTimeout(r, 600));
+    tab = await chrome.tabs.get(tab.id);
+  }
   // Guard: browser-internal pages reject chrome.debugger. A fresh-tab page
   // (user hit ctrl+T in the agent's window) holds nothing of value — recover
   // by swapping it to about:blank and proceeding. Any other internal page
@@ -151,7 +182,17 @@ async function requireTab(agent) {
 
 async function attach(tabId) {
   if (attached.has(tabId)) return;
-  await chrome.debugger.attach({ tabId }, "1.3");
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+  } catch (e) {
+    // A frozen (Memory Saver) tab surfaces as another extension's placeholder
+    // page at attach time — reload revives it, then retry once.
+    if (/chrome-extension/i.test(String((e && e.message) || e))) {
+      await chrome.tabs.reload(tabId).catch(() => {});
+      await new Promise((r) => setTimeout(r, 800));
+      await chrome.debugger.attach({ tabId }, "1.3");
+    } else throw e;
+  }
   await chrome.debugger.sendCommand({ tabId }, "Page.enable");
   await chrome.debugger.sendCommand({ tabId }, "Runtime.enable");
   attached.add(tabId);
@@ -346,6 +387,7 @@ const handlers = {
       if (tabId == null) throw new Error("tabs select needs tabId (from browser_tabs list)");
       await chrome.tabs.get(tabId); // throws if the tab is gone
       agentTabs.set(agent, tabId);
+      persist();
       return `Tab ${tabId} is now this agent's current tab`;
     }
     if (action === "close") {
@@ -369,11 +411,13 @@ const handlers = {
 chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId);
   for (const [a, t] of agentTabs) if (t === tabId) agentTabs.delete(a);
+  persist();
 });
 
 chrome.windows.onRemoved.addListener((winId) => {
   ownedWindows.delete(winId);
   for (const [a, w] of agentWindows) if (w === winId) { agentWindows.delete(a); chrome.alarms.clear(`reap-${a}`); }
+  persist();
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
