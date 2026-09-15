@@ -5,11 +5,14 @@
 // `agent` id: each agent session gets its own dedicated window (spawned on
 // first use) and its own element-id namespace. All of the agent's tabs live
 // inside that window; the current tab is just the window's active tab.
+// Chrome installs extensions per profile, so every profile with the arm dials
+// separately; each instance registers itself with a stable per-profile id and
+// the host routes commands to the requested one.
 const PORT = 8765;
 const WS_URL = `ws://localhost:${PORT}/chrome`; // /chrome = "I'm the browser"; bare / = another pi session relaying
 const LOAD_TIMEOUT = 15000;
 
-let ws;
+let ws, profileId;
 const agentTabs = new Map();    // agent id -> explicitly selected tabId (tabs select; may live outside the agent's window)
 const agentWindows = new Map(); // agent id -> windowId (per-agent session window)
 const ownedWindows = new Set(); // window ids the arm created — the only ones safe to auto-close
@@ -26,7 +29,10 @@ chrome.alarms.create("keepalive", { periodInMinutes: 0.5 });
 
 function connect() {
   ws = new WebSocket(WS_URL);
-  ws.onopen = () => console.log(`[arm] connected ${WS_URL}`);
+  ws.onopen = () => {
+    console.log(`[arm:${profileId}] connected ${WS_URL}`);
+    ws.send(JSON.stringify({ hello: { profile: profileId } })); // register this profile with the host
+  };
   ws.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
@@ -35,7 +41,14 @@ function connect() {
   ws.onclose = () => setTimeout(connect, 2000);
   ws.onerror = () => ws.close();
 }
-connect();
+
+// stable per-profile id: Chrome has no API for the profile's name, so a random
+// id persisted in this profile's extension storage identifies it to the host
+chrome.storage.local.get(["profileId"]).then(({ profileId: id }) => {
+  profileId = id || "p-" + Math.random().toString(36).slice(2, 8);
+  if (!id) chrome.storage.local.set({ profileId });
+  connect();
+});
 
 // serialize each agent's multi-step sequences (click/type) so concurrent
 // agents can't interleave half a click or half a typed string

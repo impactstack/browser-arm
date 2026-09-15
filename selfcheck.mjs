@@ -46,9 +46,10 @@ factory({
 const fake = spawn(process.execPath, ["fake-arm.js"], { stdio: "inherit" });
 
 const assert = (cond, msg) => {
-  if (!cond) { console.error("FAIL:", msg); fake.kill(); process.exit(1); }
+  if (!cond) { console.error("FAIL:", msg); fake.kill(); fakeB?.kill(); process.exit(1); }
   console.log("ok:", msg);
 };
+let fakeB;
 
 // retry until fake-arm has connected to the server
 async function until(fn, ms = 6000) {
@@ -74,8 +75,35 @@ try {
   const code = await new Promise((r) => probe.on("exit", (c) => r(c)));
   assert(code === 0, "second session relays through the host");
 
+  // ---- multi-profile: a second Chrome profile connects; routing must respect selection ----
+  fakeB = spawn(process.execPath, ["fake-arm.js"], { stdio: "inherit", env: { ...process.env, ARM_PROFILE_ID: "profile-b" } });
+  const profileList = async () => tools.browser_profile.run({ action: "list" }).then(JSON.parse).catch(() => null);
+  const both = await until(async () => {
+    const l = await profileList();
+    return Array.isArray(l) && l.includes("profile-b") && l.includes("default") ? l : Promise.reject(new Error("waiting"));
+  });
+  assert(both.includes("profile-b") && both.includes("default"), "browser_profile lists both connected profiles");
+
+  const ambiguous = await tools.browser_tabs.run({ action: "list" }).catch((e) => e);
+  assert(ambiguous instanceof Error && /multiple Chrome profiles/.test(ambiguous.message), "ambiguous commands fail listing the profiles");
+
+  assert(String(await tools.browser_profile.run({ action: "select", id: "profile-b" })).includes("profile-b"), "browser_profile select works");
+  assert(String(await tools.browser_tabs.run({ action: "list" })).includes("profile=profile-b"), "commands route to the selected profile");
+  assert(String(await tools.browser_profile.run({ action: "select", id: "default" })).includes("default"), "switching profiles works");
+  assert(String(await tools.browser_tabs.run({ action: "list" })).includes("profile=default"), "commands route back to the first profile");
+  const bad = await tools.browser_profile.run({ action: "select", id: "nope" }).catch((e) => e);
+  assert(bad instanceof Error && /no profile/.test(bad.message), "selecting an unknown profile fails clearly");
+
+  fakeB.kill();
+  await until(async () => {
+    const l = await profileList();
+    return Array.isArray(l) && l.length === 1 && l[0] === "default" ? l : Promise.reject(new Error("waiting"));
+  });
+  assert(true, "disconnected profile disappears from the list");
+
   console.log("ALL CHECKS PASSED");
 } finally {
   fake.kill();
+  fakeB?.kill();
   await events.session_shutdown?.(); // close the ws server so node can exit
 }

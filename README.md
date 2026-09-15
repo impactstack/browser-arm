@@ -9,7 +9,7 @@ Give any AI coding agent an arm to drive Chrome.
 └──────────────┘   results     └────────────────┘                       └────────────────────┘
 ```
 
-- **pi side** (`pi-extension/`): registers 9 `browser_*` tools + `/arm` status command. Hosts a WebSocket server; extra pi sessions auto-relay through it.
+- **pi side** (`pi-extension/`): registers 10 `browser_*` tools + `/arm` status command. Hosts a WebSocket server; extra pi sessions auto-relay through it.
 - **Chrome side** (`chrome-extension/`): MV3 service worker that dials the server and executes commands via `chrome.debugger` (CDP) — real input events, screenshots, JS evaluation.
 - **Agent-agnostic**: pi is just the shipped adapter. The arm speaks a tiny JSON-over-WebSocket protocol — any agent or script that can open a WebSocket (Claude Code, Cursor, your own code) can drive it. See [Using with any agent](#using-with-any-agent-protocol).
 
@@ -134,6 +134,7 @@ Windows: symlinks need Developer Mode (Settings → Privacy & security → For d
 | `browser_screenshot` | Viewport jpeg returned as an image for the model |
 | `browser_evaluate` | Arbitrary JS in the page (escape hatch) |
 | `browser_tabs` | list (all tabs, with owning agent) / select (adopt any tab) / close |
+| `browser_profile` | list / select which Chrome profile (person) this session drives — only matters when 2+ profiles have the arm loaded |
 
 Typical agent loop: `snapshot` → `click`/`type` by id → `screenshot` or `read` to verify.
 
@@ -210,6 +211,7 @@ Tests run on port 8799 so they never touch a live arm session.
 - Chrome shows a **"Browser Arm started debugging this browser"** infobar — that's `chrome.debugger`, expected.
 - `chrome://` and Web Store pages reject debugger attach; use normal pages.
 - Multiple pi sessions share one arm: the first session hosts, the rest auto-relay through it (and take over hosting if the host exits).
+- Multiple Chrome profiles: Chrome installs extensions per profile, so load the extension in each profile you want drivable. Every profile registers with a stable id (its own cookies/logins stay separate); with 2+ connected, pick with `browser_profile select` — with exactly one, everything routes there automatically. Agent windows are per (profile, session) and never collide.
 - Port is 8765; override on both sides with `BROWSER_ARM_PORT` (env for pi, edit `PORT` in `background.js` for Chrome).
 - Multiple agents, no collisions: every session stamps commands with an agent id — each agent gets **its own window** and its own element-id namespace, and per-agent commands are serialized so half-clicks/half-typed strings can't interleave. `browser_tabs list` shows which agent owns which tab.
 - Memory: an agent's window auto-closes after **10 min of inactivity** (via `chrome.alarms`, so it works even when the service worker sleeps) — and only windows the arm itself created; user windows adopted via `tabs select` are never closed.

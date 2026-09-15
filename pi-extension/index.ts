@@ -15,8 +15,10 @@ const AGENT_ID = randomBytes(4).toString("hex"); // stamps every command; the Ch
 // ---------- bridge ----------
 
 let wss: WebSocketServer | null = null; // set when we host
-let chromeSock: WebSocket | null = null; // the Chrome extension, when we host
+const chromeSocks = new Map<string, WebSocket>(); // Chrome profile id -> that profile's extension socket (profiles connect separately)
+const unregistered = new Set<WebSocket>(); // connected but no hello yet (old builds) — treated as legacy "default"
 let relaySock: WebSocket | null = null; // host session, when we're the relay client
+let activeProfile: string | undefined; // which Chrome profile this session drives (browser_profile select)
 let seq = 0;
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
@@ -45,6 +47,23 @@ function resolveMsg(raw: unknown) {
   }
 }
 
+// Route a command to the right Chrome profile's socket. With one profile
+// connected everything goes there; with several, a profile must be selected.
+function routeChrome(profile?: string): WebSocket {
+  if (profile) {
+    const s = chromeSocks.get(profile) ?? (profile === "default" && unregistered.size >= 1 ? [...unregistered][0] : undefined);
+    if (!s) throw new Error(`no Chrome profile "${profile}" connected — connected: ${profileIds().join(", ") || "(none)"}`);
+    return s;
+  }
+  if (chromeSocks.size === 1) return [...chromeSocks.values()][0];
+  if (chromeSocks.size === 0 && unregistered.size === 1) return [...unregistered][0]; // legacy single connection, no hello
+  if (chromeSocks.size === 0 && unregistered.size > 1) throw new Error("multiple Chrome connections from old extension builds — reload the extension in every profile");
+  if (chromeSocks.size === 0) throw new Error("no Chrome connected — load chrome-extension/ in Chrome (chrome://extensions → Load unpacked)");
+  throw new Error(`multiple Chrome profiles connected (${[...chromeSocks.keys()].join(", ")}) — pick one with browser_profile`);
+}
+
+const profileIds = (): string[] => (chromeSocks.size ? [...chromeSocks.keys()] : unregistered.size ? ["default"] : []);
+
 function hostOrRelay() {
   const w = new WebSocketServer({ port: PORT });
   wss = w;
@@ -56,23 +75,42 @@ function hostOrRelay() {
   });
   w.on("connection", (ws, req) => {
     if ((req.url ?? "").endsWith("/chrome")) {
-      // Chrome extension: incoming messages are responses to our commands
-      chromeSock = ws;
-      ws.on("message", resolveMsg);
-      ws.on("close", () => { if (chromeSock === ws) chromeSock = null; });
+      // Chrome extension: incoming messages are responses to our commands.
+      // It names its Chrome profile via hello; until then it stays
+      // unregistered (legacy "default", kept out of the profile map).
+      unregistered.add(ws);
+      ws.on("message", (raw) => {
+        let msg: { hello?: { profile?: string } };
+        try { msg = JSON.parse(String(raw)); } catch { return; }
+        if (msg.hello?.profile) {
+          unregistered.delete(ws);
+          chromeSocks.set(msg.hello.profile, ws); // replaces any stale socket for the same profile (reconnect)
+          return;
+        }
+        resolveMsg(raw);
+      });
+      ws.on("close", () => {
+        unregistered.delete(ws);
+        for (const [k, s] of chromeSocks) if (s === ws) chromeSocks.delete(k);
+      });
     } else {
       // another pi session: its messages are commands to forward to Chrome
       ws.on("message", (raw) => {
-        let msg: { id: number; cmd: string; params?: unknown };
+        let msg: { id: number; cmd: string; params?: unknown; profile?: string };
         try { msg = JSON.parse(String(raw)); } catch { return; }
-        if (!chromeSock || chromeSock.readyState !== WebSocket.OPEN) {
-          ws.send(JSON.stringify({ id: msg.id, ok: false, error: "host session has no Chrome connected" }));
-          return;
+        try {
+          if (msg.cmd === "profiles") { // answered by the host itself, no Chrome round-trip
+            ws.send(JSON.stringify({ id: msg.id, ok: true, result: profileIds() }));
+            return;
+          }
+          const out = routeChrome(msg.profile);
+          const internal = ++seq;
+          const timer = setTimeout(() => relayPending.delete(internal), TIMEOUT_MS + 5000);
+          relayPending.set(internal, { relay: ws, id: msg.id, timer });
+          out.send(JSON.stringify({ id: internal, cmd: msg.cmd, params: msg.params, agent: msg.agent }));
+        } catch (e) {
+          ws.send(JSON.stringify({ id: msg.id, ok: false, error: (e as Error).message }));
         }
-        const internal = ++seq;
-        const timer = setTimeout(() => relayPending.delete(internal), TIMEOUT_MS + 5000);
-        relayPending.set(internal, { relay: ws, id: msg.id, timer });
-        chromeSock.send(JSON.stringify({ id: internal, cmd: msg.cmd, params: msg.params, agent: msg.agent }));
       });
       ws.on("close", () => {
         for (const [k, e] of relayPending) if (e.relay === ws) { clearTimeout(e.timer); relayPending.delete(k); }
@@ -97,9 +135,8 @@ function connectRelay() {
 async function arm<T = unknown>(cmd: string, params: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> {
   if (signal?.aborted) throw new Error("aborted");
   armUsed = true;
-  const out =
-    chromeSock?.readyState === WebSocket.OPEN ? chromeSock :
-    relaySock?.readyState === WebSocket.OPEN ? relaySock : null;
+  if (cmd === "profiles" && wss) return profileIds() as T; // host answers itself
+  const out = wss ? routeChrome(activeProfile) : relaySock?.readyState === WebSocket.OPEN ? relaySock : null;
   if (!out) {
     throw new Error(
       `Browser Arm not connected. In Chrome: chrome://extensions → Load unpacked → chrome-extension/ from this repo. ` +
@@ -113,7 +150,7 @@ async function arm<T = unknown>(cmd: string, params: Record<string, unknown> = {
       reject(new Error(`${cmd} timed out after ${TIMEOUT_MS / 1000}s`));
     }, TIMEOUT_MS);
     pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-    out.send(JSON.stringify({ id, cmd, params, agent: AGENT_ID }));
+    out.send(JSON.stringify({ id, cmd, params, agent: AGENT_ID, profile: activeProfile }));
   });
 }
 
@@ -244,11 +281,33 @@ export default function browserArm(pi: ExtensionAPI) {
     run: (p) => arm<unknown>("tabs", p).then((r) => JSON.stringify(r, null, 1)),
   });
 
+  tool({
+    name: "browser_profile",
+    label: "Browser Profile",
+    description:
+      "Chrome profiles (people) with the arm installed each connect separately, each with its own cookies/logins. " +
+      "list = connected profile ids; select = which one this session's browser_* tools drive. " +
+      "Only needed when 2+ profiles are connected (with one, everything routes there automatically).",
+    parameters: Type.Object({
+      action: Type.Union([Type.Literal("list"), Type.Literal("select")], { description: "Profile action" }),
+      id: Type.Optional(Type.String({ description: "Profile id (from list, for select)" })),
+    }),
+    run: async (p) => {
+      if (p.action === "list") return JSON.stringify(await arm<string[]>("profiles"), null, 1);
+      if (!p.id) throw new Error("browser_profile select needs id (from browser_profile list)");
+      const ids = await arm<string[]>("profiles");
+      if (!ids.includes(p.id)) throw new Error(`no profile "${p.id}" connected — connected: ${ids.join(", ") || "(none)"}`);
+      activeProfile = p.id;
+      return `This session now drives Chrome profile ${p.id}`;
+    },
+  });
+
   pi.registerCommand("arm", {
     description: "Browser Arm status",
     handler: async (_args, ctx) => {
       let msg: string;
-      if (chromeSock?.readyState === WebSocket.OPEN) msg = `Browser Arm [${AGENT_ID}] hosting ws://localhost:${PORT}, Chrome connected`;
+      const n = chromeSocks.size;
+      if (wss && n > 0) msg = `Browser Arm [${AGENT_ID}] hosting ws://localhost:${PORT}, Chrome connected (${n} profile${n > 1 ? "s" : ""}: ${[...chromeSocks.keys()].join(", ")}${activeProfile ? ", driving " + activeProfile : ""})`;
       else if (wss) msg = `Browser Arm [${AGENT_ID}] hosting ws://localhost:${PORT}, waiting for Chrome (load chrome-extension/ unpacked)`;
       else if (relaySock?.readyState === WebSocket.OPEN) msg = `Browser Arm [${AGENT_ID}] relaying through the host pi session on port ${PORT}`;
       else msg = `Browser Arm [${AGENT_ID}] not connected — load chrome-extension/ in Chrome (dials ws://localhost:${PORT}/chrome)`;
@@ -271,7 +330,8 @@ export default function browserArm(pi: ExtensionAPI) {
     pending.clear();
     for (const [, e] of relayPending) clearTimeout(e.timer);
     relayPending.clear();
-    chromeSock = null;
+    chromeSocks.clear();
+    activeProfile = undefined;
     relaySock = null;
     wss?.close();
     wss = null;
