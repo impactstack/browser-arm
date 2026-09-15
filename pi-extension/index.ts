@@ -293,9 +293,15 @@ export default function browserArm(pi: ExtensionAPI) {
       id: Type.Optional(Type.String({ description: "Profile id (from list, for select)" })),
     }),
     run: async (p) => {
-      if (p.action === "list") return JSON.stringify(await arm<string[]>("profiles"), null, 1);
+      const listIds = async () =>
+        arm<string[]>("profiles").catch((e) => {
+          if (/unknown command/i.test(e.message))
+            throw new Error("the hosting pi session runs an older Browser Arm build without profile support — close/restart it so a current session takes over, then retry (check with /arm)");
+          throw e;
+        });
+      if (p.action === "list") return JSON.stringify(await listIds(), null, 1);
       if (!p.id) throw new Error("browser_profile select needs id (from browser_profile list)");
-      const ids = await arm<string[]>("profiles");
+      const ids = await listIds();
       if (!ids.includes(p.id)) throw new Error(`no profile "${p.id}" connected — connected: ${ids.join(", ") || "(none)"}`);
       activeProfile = p.id;
       return `This session now drives Chrome profile ${p.id}`;

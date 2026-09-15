@@ -63,10 +63,12 @@ try {
 const queues = new Map();
 
 async function handle({ id, cmd, params = {}, agent = "default" }) {
+  const handler = handlers[cmd];
+  if (!handler) throw new Error(`unknown command "${cmd}" — Chrome extension and pi extension are out of sync; reload the extension and restart pi sessions`);
   const prev = queues.get(agent) || Promise.resolve();
   const next = prev.catch(() => {}).then(async () => {
     try {
-      const result = await handlers[cmd](params, agent);
+      const result = await handler(params, agent);
       send({ id, ok: true, result });
     } catch (err) {
       send({ id, ok: false, error: String((err && err.message) || err) });
